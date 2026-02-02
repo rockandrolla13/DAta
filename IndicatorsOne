@@ -1,0 +1,35 @@
+Field,Specification,Description
+Asset Universe,US Equity Sectors,The 11 Select Sector SPDR ETFs: 1. XLE (Energy)2. XLF (Financials)3. XLK (Technology)4. XLV (Healthcare)5. XLY (Cons. Disc.)6. XLP (Cons. Staples)7. XLI (Industrials)8. XLB (Materials)9. XLU (Utilities)10. XLRE (Real Estate)11. XLC (Comm. Services)
+Data Type,OHLCV Bars,"Open, High, Low, Close, Volume. The calculation relies specifically on the Close of the bar to build the covariance matrix."
+Frequency,1-Minute,"High frequency is required to establish a meaningful rolling covariance matrix intraday (e.g., rolling 60-minute window)."
+Market Session,09:30 - 16:00 EST,US Market Hours.
+
+Field,Specification,Description
+Asset Universe,EM Currency Pairs,"USD/BRL, USD/MXN, USD/COP, USD/CLP, USD/PEN, USD/TRY, USD/ZAR, USD/RUB (if tradable), USD/ILS, USD/HUF, USD/PLN, USD/CZK, USD/CNH, USD/INR (NDF), USD/IDR (NDF), USD/KRW, USD/MYR (NDF), USD/SGD, USD/PHP, USD/THB, USD/TWD."
+Data Type 1,Spot Rate (Mid),Used to track spot moves.
+Data Type 2,Implied Volatility,"1-Month ATM Implied Volatility. (While the paper uses 12M and Risk Reversals, 1M ATM is the primary liquid intraday driver)."
+Frequency,Spot: 1-MinuteVol: 15-Minute,Spot data must be high frequency. Options markets for EM are less liquid; a 15-minute or 30-minute snapshot of the vol surface is sufficient to capture intraday repricing.
+
+Field,Specification,Description
+Asset Universe,Sovereign Bond Futures,US: 10Y Treasury Note Futures (TY)Germany: Euro-Bund Futures (FGBL) & Euro-Schatz (FGBS - for curve)UK: Long Gilt Futures (G)Japan: 10Y JGB Futures (JB)
+Data Type,OHLCV Bars,"Close price is used for Momentum calculations (e.g., Price vs Moving Average).Yield implies are needed for Carry (Steepness)."
+Frequency,15-Minute,Trend and Carry signals are slower-moving; 15-minute bars filter out noise while retaining intraday responsiveness.
+Session,Global,"These markets trade in different time zones. You must normalize data to GMT or capture their respective active trading hours (London, NY, Tokyo)."
+
+Field,Specification,Description
+Asset Universe,Cycle Proxies,Copper: HG Futures (High sensitivity to global growth/cycle).Oil: CL Futures (Inflation/Growth input).Equity Vol: VIX Index (Risk aversion proxy).
+Data Type,Last Price,"Used as correlation inputs to determine the ""Cycle"" regime."
+Frequency,5-Minute,"""Cycle"" assets are volatile; higher frequency is needed to capture rapid shifts in sentiment intraday."
+
+Summary of ALL Required Data Feeds (Merged List)
+US Sectors (11 ETFs): For Absorption Ratio (Systemic Risk).
+
+EM Basket (Spot FX, FX Vol, Index Fut, Bond Fut, Bond ETFs): For EM Risk Monitor.
+
+US Credit Term Structure (VCSH, VCIT, VCLT): For Credit Spread Slope/Curvature.
+
+Risk-Free Term Structure (UST Futures 2Y, 5Y, 10Y, 30Y): For Riskless Slope.
+
+Global Sovereigns (Bund, Gilt, JGB Futures): For MS Bond Signals.
+
+Cycle Commodities (Copper, Oil): For Economic Cycle inputs.
