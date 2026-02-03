@@ -1,0 +1,928 @@
+# Claude Code Implementation Prompt: Credit Analytics Monorepo
+
+## Objective
+
+Create a production-grade Python monorepo for credit trading analytics. The repo must be:
+- Fully functional with passing tests
+- Git-committed and ready to push
+- Reproducible in any environment with `uv` installed
+
+## Context
+
+This implements a credit predictive analytics engine with:
+- **Retail imbalance signals**: Track retail bond flow, compute Z-scores, detect streaks
+- **Mean reversion strategy**: Fade extreme Z-scores (|Z| > 7)
+- **Momentum strategy**: Follow streak continuation (≥3 days)
+
+The system uses spec-driven development: formulas in `spec/SPEC.md` → fixtures in `spec/fixtures/` → code in `packages/` → tests verify parity.
+
+---
+
+## Step 1: Initialize Repository
+
+```bash
+mkdir -p credit-analytics && cd credit-analytics
+git init
+```
+
+## Step 2: Create Directory Structure
+
+Create all directories:
+
+```
+credit-analytics/
+├── apps/
+│   └── api/src/
+├── config/
+│   ├── environments/
+│   └── strategies/
+├── docs/decisions/
+├── packages/
+│   ├── core/src/
+│   ├── data/src/adapters/
+│   ├── data/tests/
+│   ├── signals/src/
+│   ├── signals/tests/
+│   ├── metrics/src/
+│   ├── metrics/tests/
+│   ├── backtest/src/
+│   └── backtest/tests/
+├── skills/
+│   ├── add-signal/
+│   ├── add-data-source/
+│   ├── run-backtest/
+│   └── verify-change/
+├── spec/fixtures/
+└── tools/
+```
+
+## Step 3: Create Root Files
+
+### CLAUDE.md (Root)
+
+```markdown
+# Credit Analytics Monorepo
+
+## Navigation
+
+\`\`\`
+packages/
+├── core/       → Vendored analytics library (DO NOT MODIFY directly)
+├── data/       → Data loading, adapters, caching
+├── signals/    → Trading signals (wraps core)
+├── metrics/    → Performance & risk metrics
+└── backtest/   → Strategy execution engine
+
+apps/api/       → FastAPI service
+config/         → TOML configuration files
+spec/           → Single source of truth (formulas, fixtures)
+skills/         → Task workflows (read before implementing)
+\`\`\`
+
+## Global Rules
+
+### 1. Read Before Writing
+- Entering a package? Read its `CLAUDE.md` first
+- Starting a task? Read the relevant `skills/*/SKILL.md` first
+- Modifying spec? Update code AND fixtures
+
+### 2. Comprehension Gates (Required for ALL PRs)
+
+| Test | Question |
+|------|----------|
+| 60-second explain | Can I describe data flow without opening the diff? |
+| Change simulation | Where would a follow-up change go? |
+| 2am debug | What are the top 3 failure modes? |
+
+**If any feel uncertain → do not merge.**
+
+### 3. Package Boundaries
+
+\`\`\`
+data/ ←── signals/ ←── backtest/
+  ↑          ↑            ↑
+  └── core ──┴────────────┘
+       ↑
+   (read-only)
+\`\`\`
+
+### 4. Spec Parity
+All formulas live in `spec/SPEC.md`. Before merge:
+\`\`\`bash
+uv run python tools/verify_spec_parity.py
+\`\`\`
+
+## Quick Commands
+
+\`\`\`bash
+uv sync                              # Install dependencies
+uv run pytest                        # Run all tests
+uv run python tools/verify_spec_parity.py  # Check spec parity
+uv run mypy packages/                # Type check
+\`\`\`
+
+## Skills Index
+
+| Task | Skill | Packages Touched |
+|------|-------|------------------|
+| Add new signal | `skills/add-signal/` | spec/, signals/, tests/ |
+| Add data source | `skills/add-data-source/` | data/adapters/, config/ |
+| Run backtest | `skills/run-backtest/` | config/, backtest/, metrics/ |
+| Verify any change | `skills/verify-change/` | (all) |
+```
+
+### pyproject.toml (Root)
+
+```toml
+[project]
+name = "credit-analytics"
+version = "0.1.0"
+description = "Credit predictive analytics monorepo"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "ruff>=0.4.0",
+    "mypy>=1.8",
+    "pandas-stubs>=2.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/core",
+    "packages/data",
+    "packages/signals",
+    "packages/metrics",
+    "packages/backtest",
+    "apps/api",
+]
+
+[tool.uv.sources]
+credit-core = { workspace = true }
+credit-data = { workspace = true }
+credit-signals = { workspace = true }
+credit-metrics = { workspace = true }
+credit-backtest = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["packages/*/tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+disallow_untyped_defs = true
+```
+
+### .gitignore
+
+```
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+*.parquet
+```
+
+---
+
+## Step 4: Create Spec (Single Source of Truth)
+
+### spec/SPEC.md
+
+```markdown
+# Credit Predictive Analytics Engine — Specification
+
+**Version**: 1.0  
+**Status**: Canonical
+
+---
+
+## §1 Core Metric Definitions
+
+### §1.1 Risk-Weighted Performance (Credit_PnL)
+
+$$
+\text{Credit\_PnL}_i = -(\Delta S_h) \times \frac{PVBP_i}{P_i}
+$$
+
+| Parameter | Type | Units | Description |
+|-----------|------|-------|-------------|
+| ΔS_h | float | bps | Forward spread change over horizon h |
+| PVBP_i | float | $/bp | Price value of basis point |
+| P_i | float | $ | Mid price |
+
+**Sign Convention**: Spread tightening (ΔS < 0) → positive PnL.
+
+**Edge Cases**:
+- P_i = 0 → raise ValueError
+- PVBP_i < 0 → valid (short position)
+
+---
+
+### §1.2 Retail Imbalance (I_t)
+
+$$
+I_t = \frac{\sum \$Buy_t - \sum \$Sell_t}{\sum \$Buy_t + \sum \$Sell_t}
+$$
+
+**Range**: [-1, +1]
+
+**Trade Classification (QMP Rule)**:
+
+| Condition | Classification |
+|-----------|----------------|
+| Price > Mid + 0.1 × Spread | Buy |
+| Price < Mid - 0.1 × Spread | Sell |
+| otherwise | Neutral (excluded) |
+
+**Retail Filter**: $1,000 ≤ Volume ≤ $100,000
+
+**Edge Cases**:
+- Denominator = 0 → return NaN
+- All trades neutral → return NaN
+
+---
+
+## §2 Predictive Signal Logic
+
+### §2.1 Mean Reversion Trigger (Z-Score)
+
+$$
+Z_t = \frac{I_t - \mu(I_{t-N:t})}{\sigma(I_{t-N:t})}
+$$
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| N | 252 | Lookback window (trading days) |
+| θ | 7.0 | Trigger threshold |
+| min_periods | N/2 | Minimum observations |
+
+**Signal Logic** (mean reversion):
+
+| Condition | Signal | Rationale |
+|-----------|--------|-----------|
+| Z_t > +θ | SELL | Extreme buying → expect reversal |
+| Z_t < -θ | BUY | Extreme selling → expect reversal |
+| otherwise | NEUTRAL | No action |
+
+**Edge Cases**:
+- n < min_periods → return NaN
+- σ = 0 → return NaN
+
+---
+
+### §2.2 Momentum Trigger (Streak)
+
+$$
+\text{Streak}_t = \begin{cases}
+\text{Streak}_{t-1} + 1 & \text{if sign}(I_t) = \text{sign}(I_{t-1}) \\
+1 & \text{otherwise}
+\end{cases}
+$$
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| K | 3 | Minimum streak for trigger |
+
+**Signal Logic** (momentum):
+
+| Condition | Signal |
+|-----------|--------|
+| Streak_t ≥ K and I_t > 0 | BUY |
+| Streak_t ≥ K and I_t < 0 | SELL |
+| otherwise | NEUTRAL |
+
+**Edge Cases**:
+- Single observation → streak = 1
+- I_t = 0 → breaks streak
+
+---
+
+## §3 Model Parameters
+
+| Parameter | Symbol | Default | Valid Range |
+|-----------|--------|---------|-------------|
+| Z-score window | N | 252 | [20, 504] |
+| Z-score threshold | θ | 7.0 | [2.0, 10.0] |
+| Z-score min_periods | - | N/2 | [1, N] |
+| QMP threshold | α | 0.1 | [0.0, 0.5] |
+| Streak minimum | K | 3 | [2, 10] |
+| Holding period | h | 5 | [1, 21] |
+
+---
+
+## §4 Failure Mode Catalog
+
+| ID | Component | Mode | Symptom | Mitigation |
+|----|-----------|------|---------|------------|
+| F1 | Imbalance | Zero denominator | NaN | Check before division |
+| F2 | Z-score | Insufficient history | NaN | Enforce min_periods |
+| F3 | Z-score | Zero variance | NaN | Check σ > 0 |
+| F4 | Streak | Zero handling | Ambiguous | Treat as break |
+| F5 | PnL | Sign convention | Inverted | Negative on ΔS |
+| F6 | Backtest | Lookahead | Inflated metrics | shift(-h) only in PnL |
+```
+
+### spec/fixtures/zscore_cases.json
+
+```json
+{
+  "spec_section": "§2.1",
+  "formula": "Z_t = (I_t - μ) / σ",
+  "cases": [
+    {
+      "description": "Normal: positive z-score triggers SELL",
+      "input": {
+        "value": 0.8,
+        "history": [0.1, 0.2, 0.15, 0.1, 0.2, 0.1, 0.15, 0.2, 0.1, 0.15]
+      },
+      "params": {"threshold": 7.0},
+      "expected": {"trigger": true, "signal": "SELL"}
+    },
+    {
+      "description": "Normal: negative z-score triggers BUY",
+      "input": {
+        "value": -0.5,
+        "history": [0.1, 0.2, 0.15, 0.1, 0.2, 0.1, 0.15, 0.2, 0.1, 0.15]
+      },
+      "params": {"threshold": 7.0},
+      "expected": {"trigger": true, "signal": "BUY"}
+    },
+    {
+      "description": "Normal: within threshold, no trigger",
+      "input": {
+        "value": 0.2,
+        "history": [0.1, 0.2, 0.15, 0.1, 0.2, 0.1, 0.15, 0.2, 0.1, 0.15]
+      },
+      "params": {"threshold": 7.0},
+      "expected": {"trigger": false, "signal": "NEUTRAL"}
+    },
+    {
+      "description": "Edge: insufficient history",
+      "input": {"value": 0.5, "history": [0.1]},
+      "params": {"threshold": 7.0},
+      "expected": {"trigger": false, "signal": "NEUTRAL", "zscore": null}
+    },
+    {
+      "description": "Edge: zero variance",
+      "input": {"value": 0.5, "history": [0.1, 0.1, 0.1, 0.1, 0.1]},
+      "params": {"threshold": 7.0},
+      "expected": {"trigger": false, "signal": "NEUTRAL", "zscore": null}
+    }
+  ]
+}
+```
+
+### spec/fixtures/streak_cases.json
+
+```json
+{
+  "spec_section": "§2.2",
+  "formula": "Streak_t = consecutive same-sign days",
+  "cases": [
+    {
+      "description": "Normal: 3-day positive streak triggers BUY",
+      "input": {"imbalance_series": [0.1, 0.2, 0.3]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": 3, "trigger": true, "signal": "BUY"}
+    },
+    {
+      "description": "Normal: 3-day negative streak triggers SELL",
+      "input": {"imbalance_series": [-0.1, -0.2, -0.3]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": -3, "trigger": true, "signal": "SELL"}
+    },
+    {
+      "description": "Normal: 2-day streak does not trigger",
+      "input": {"imbalance_series": [0.1, 0.2]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": 2, "trigger": false, "signal": "NEUTRAL"}
+    },
+    {
+      "description": "Normal: streak resets on sign change",
+      "input": {"imbalance_series": [0.1, 0.2, -0.1, -0.2]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": -2, "trigger": false, "signal": "NEUTRAL"}
+    },
+    {
+      "description": "Edge: zero breaks streak",
+      "input": {"imbalance_series": [0.1, 0.2, 0.0, 0.3]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": 1, "trigger": false, "signal": "NEUTRAL"}
+    },
+    {
+      "description": "Edge: single value",
+      "input": {"imbalance_series": [0.5]},
+      "params": {"min_streak": 3},
+      "expected": {"streak": 1, "trigger": false, "signal": "NEUTRAL"}
+    }
+  ]
+}
+```
+
+---
+
+## Step 5: Implement Packages
+
+### packages/signals/pyproject.toml
+
+```toml
+[project]
+name = "credit-signals"
+version = "0.1.0"
+description = "Trading signal implementations"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+```
+
+### packages/signals/CLAUDE.md
+
+```markdown
+# Signals Package
+
+## Purpose
+Trading signal implementations. Thin wrappers with trigger logic.
+
+## Spec Reference
+- §2.1: Z-score mean reversion
+- §2.2: Streak momentum
+
+## Signal API Pattern
+
+\`\`\`python
+@dataclass(frozen=True)
+class {Signal}Params:
+    """Parameters matching spec."""
+
+@dataclass(frozen=True)
+class {Signal}Result:
+    raw_value: float | None
+    trigger: bool
+    signal: Signal  # BUY/SELL/NEUTRAL
+
+def {signal}_trigger(inputs, params) -> {Signal}Result:
+    """Docstring references spec section."""
+\`\`\`
+
+## Failure Modes
+
+| ID | Mode | Handling |
+|----|------|----------|
+| F-SIG-1 | Insufficient history | Return None |
+| F-SIG-2 | Zero variance | Return None |
+```
+
+### packages/signals/src/__init__.py
+
+```python
+"""Trading signals package."""
+from .triggers import (
+    Signal,
+    ZScoreParams,
+    ZScoreResult,
+    StreakParams,
+    StreakResult,
+    zscore_trigger,
+    streak_trigger,
+)
+
+__all__ = [
+    "Signal",
+    "ZScoreParams",
+    "ZScoreResult", 
+    "StreakParams",
+    "StreakResult",
+    "zscore_trigger",
+    "streak_trigger",
+]
+```
+
+### packages/signals/src/triggers.py
+
+```python
+"""
+Signal Triggers
+
+Implements spec §2.1 (z-score) and §2.2 (streak).
+
+Failure Modes
+-------------
+F2: Insufficient history → zscore=None
+F3: Zero variance → zscore=None
+F4: Zero imbalance → breaks streak
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from enum import Enum
+from typing import Sequence
+
+
+class Signal(Enum):
+    """Signal direction."""
+    BUY = "BUY"
+    SELL = "SELL"
+    NEUTRAL = "NEUTRAL"
+
+
+# =============================================================================
+# §2.1 Z-Score Mean Reversion
+# =============================================================================
+
+@dataclass(frozen=True)
+class ZScoreParams:
+    """Spec §2.1 parameters."""
+    window: int = 252
+    threshold: float = 7.0
+    min_periods: int = 126
+
+
+@dataclass(frozen=True)
+class ZScoreResult:
+    """Z-score trigger result."""
+    zscore: float | None
+    trigger: bool
+    signal: Signal
+
+
+def zscore_trigger(
+    value: float,
+    history: Sequence[float],
+    params: ZScoreParams = ZScoreParams(),
+) -> ZScoreResult:
+    """
+    Spec §2.1: Z-score mean reversion trigger.
+    
+    Signal Logic (mean reversion - fade extremes):
+    - Z > +threshold → SELL
+    - Z < -threshold → BUY
+    """
+    n = len(history)
+    
+    # F2: Insufficient history
+    if n < 2:
+        return ZScoreResult(zscore=None, trigger=False, signal=Signal.NEUTRAL)
+    
+    mu = sum(history) / n
+    var = sum((x - mu) ** 2 for x in history) / (n - 1)
+    sigma = math.sqrt(var) if var > 0 else 0.0
+    
+    # F3: Zero variance
+    if sigma == 0:
+        return ZScoreResult(zscore=None, trigger=False, signal=Signal.NEUTRAL)
+    
+    z = (value - mu) / sigma
+    trigger = abs(z) > params.threshold
+    
+    if z > params.threshold:
+        signal = Signal.SELL
+    elif z < -params.threshold:
+        signal = Signal.BUY
+    else:
+        signal = Signal.NEUTRAL
+    
+    return ZScoreResult(zscore=z, trigger=trigger, signal=signal)
+
+
+# =============================================================================
+# §2.2 Streak Momentum
+# =============================================================================
+
+@dataclass(frozen=True)
+class StreakParams:
+    """Spec §2.2 parameters."""
+    min_streak: int = 3
+
+
+@dataclass(frozen=True)
+class StreakResult:
+    """Streak trigger result."""
+    streak: int
+    trigger: bool
+    signal: Signal
+
+
+def streak_trigger(
+    imbalance_series: Sequence[float],
+    params: StreakParams = StreakParams(),
+) -> StreakResult:
+    """
+    Spec §2.2: Streak momentum trigger.
+    
+    Signal Logic (momentum - follow trend):
+    - Streak ≥ K and positive → BUY
+    - Streak ≥ K and negative → SELL
+    """
+    if not imbalance_series:
+        return StreakResult(streak=0, trigger=False, signal=Signal.NEUTRAL)
+    
+    streak = 0
+    last_sign = None
+    
+    for value in reversed(imbalance_series):
+        # F4: Zero breaks streak
+        if value == 0:
+            break
+        
+        current_sign = 1 if value > 0 else -1
+        
+        if last_sign is None:
+            last_sign = current_sign
+            streak = current_sign
+        elif current_sign == last_sign:
+            streak += current_sign
+        else:
+            break
+    
+    trigger = abs(streak) >= params.min_streak
+    
+    if trigger:
+        signal = Signal.BUY if streak > 0 else Signal.SELL
+    else:
+        signal = Signal.NEUTRAL
+    
+    return StreakResult(streak=streak, trigger=trigger, signal=signal)
+```
+
+### packages/signals/tests/test_triggers.py
+
+```python
+"""Fixture-driven tests for signal triggers."""
+import json
+from pathlib import Path
+
+import pytest
+
+from src.triggers import (
+    Signal,
+    ZScoreParams,
+    StreakParams,
+    zscore_trigger,
+    streak_trigger,
+)
+
+FIXTURES_DIR = Path(__file__).parents[3] / "spec" / "fixtures"
+
+
+@pytest.fixture
+def zscore_cases():
+    path = FIXTURES_DIR / "zscore_cases.json"
+    return json.loads(path.read_text())["cases"]
+
+
+@pytest.fixture
+def streak_cases():
+    path = FIXTURES_DIR / "streak_cases.json"
+    return json.loads(path.read_text())["cases"]
+
+
+def test_zscore_cases(zscore_cases):
+    for case in zscore_cases:
+        inp = case["input"]
+        expected = case["expected"]
+        params = ZScoreParams(**case.get("params", {}))
+        
+        result = zscore_trigger(
+            value=inp["value"],
+            history=inp["history"],
+            params=params,
+        )
+        
+        assert result.trigger == expected["trigger"], f"Failed: {case['description']}"
+        assert result.signal.value == expected["signal"], f"Failed: {case['description']}"
+        
+        if "zscore" in expected and expected["zscore"] is None:
+            assert result.zscore is None, f"Failed: {case['description']}"
+
+
+def test_streak_cases(streak_cases):
+    for case in streak_cases:
+        inp = case["input"]
+        expected = case["expected"]
+        params = StreakParams(**case.get("params", {}))
+        
+        result = streak_trigger(
+            imbalance_series=inp["imbalance_series"],
+            params=params,
+        )
+        
+        assert result.streak == expected["streak"], f"Failed: {case['description']}"
+        assert result.trigger == expected["trigger"], f"Failed: {case['description']}"
+        assert result.signal.value == expected["signal"], f"Failed: {case['description']}"
+
+
+class TestZScoreEdgeCases:
+    def test_empty_history(self):
+        result = zscore_trigger(0.5, [])
+        assert result.zscore is None
+        assert result.signal == Signal.NEUTRAL
+
+    def test_single_value_history(self):
+        result = zscore_trigger(0.5, [0.1])
+        assert result.zscore is None
+
+
+class TestStreakEdgeCases:
+    def test_empty_series(self):
+        result = streak_trigger([])
+        assert result.streak == 0
+        assert result.signal == Signal.NEUTRAL
+```
+
+---
+
+## Step 6: Implement Remaining Packages
+
+For each package (data, metrics, backtest), create:
+1. `pyproject.toml` with appropriate dependencies
+2. `CLAUDE.md` with package-specific context
+3. `src/__init__.py` with exports
+4. Implementation files
+5. Tests
+
+**See the full architecture in `docs/decisions/001-architecture.md`**
+
+---
+
+## Step 7: Create Tools
+
+### tools/verify_spec_parity.py
+
+```python
+#!/usr/bin/env python3
+"""Verify code matches spec."""
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+SPEC_FILE = ROOT / "spec" / "SPEC.md"
+FIXTURES_DIR = ROOT / "spec" / "fixtures"
+
+
+def check_spec_exists():
+    return SPEC_FILE.exists()
+
+
+def check_fixtures_exist():
+    expected = ["zscore_cases.json", "streak_cases.json"]
+    return all((FIXTURES_DIR / f).exists() for f in expected)
+
+
+def run_tests():
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "packages/", "-v", "--tb=short"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    return result.returncode == 0
+
+
+def main():
+    checks = [
+        ("Spec exists", check_spec_exists()),
+        ("Fixtures exist", check_fixtures_exist()),
+        ("Tests pass", run_tests()),
+    ]
+    
+    print("Spec Parity Verification")
+    print("=" * 40)
+    
+    failed = 0
+    for name, passed in checks:
+        status = "✓" if passed else "✗"
+        print(f"  {status} {name}")
+        if not passed:
+            failed += 1
+    
+    if failed:
+        print(f"\n⚠️  {failed} check(s) failed")
+        sys.exit(1)
+    else:
+        print("\n✓ All checks passed")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## Step 8: Create Config Files
+
+### config/data_sources.toml
+
+```toml
+[data]
+primary_adapter = "parquet"
+cache_enabled = true
+
+[data.parquet]
+root = "./data/processed"
+```
+
+### config/strategies/retail_mean_reversion.toml
+
+```toml
+[strategy]
+name = "retail_mean_reversion"
+description = "Z-score mean reversion on retail imbalance"
+
+[signal]
+type = "zscore"
+[signal.params]
+window = 252
+threshold = 7.0
+
+[execution]
+holding_period_days = 5
+transaction_cost_bps = 5
+
+[backtest]
+start_date = "2020-01-01"
+end_date = "2024-12-31"
+```
+
+---
+
+## Step 9: Create Skills
+
+Create these skill files following the pattern in the architecture doc:
+- `skills/add-signal/SKILL.md`
+- `skills/add-data-source/SKILL.md`
+- `skills/run-backtest/SKILL.md`
+- `skills/verify-change/SKILL.md`
+
+---
+
+## Step 10: Verify and Commit
+
+```bash
+# Install dependencies
+uv sync
+
+# Run tests
+uv run pytest
+
+# Verify spec parity
+uv run python tools/verify_spec_parity.py
+
+# Commit
+git add -A
+git commit -m "feat: initial credit-analytics monorepo
+
+- Spec-driven development: SPEC.md → fixtures → code → tests
+- Packages: signals (zscore, streak triggers)
+- Tools: verify_spec_parity.py
+- Skills: add-signal, add-data-source, run-backtest, verify-change
+- Config: TOML-based strategy configuration
+
+All tests passing. Ready for parallel implementation of:
+- packages/data (adapters)
+- packages/metrics (Sharpe, drawdown, etc.)
+- packages/backtest (engine)
+- apps/api (FastAPI service)"
+```
+
+---
+
+## Verification Checklist
+
+Before considering this complete:
+
+- [ ] `uv sync` succeeds
+- [ ] `uv run pytest` shows all tests passing
+- [ ] `uv run python tools/verify_spec_parity.py` passes
+- [ ] Git repo has clean commit
+- [ ] All CLAUDE.md files present (root + each package)
+- [ ] All SKILL.md files present
+- [ ] spec/SPEC.md contains all formulas
+- [ ] spec/fixtures/ contains test cases for each signal
