@@ -1,0 +1,32 @@
+Use these Bloomberg field names in spec/SPEC.md §5:
+
+## §5 Attribution Dimensions
+
+### Source Fields (from Bloomberg)
+| Dimension | Field Name | Type |
+|-----------|------------|------|
+| Rating | composite_rating | str (e.g., "A", "BBB+", "BB-") |
+| Maturity | maturity_date | date |
+| Sector | industry_sector | str |
+
+### Derived Buckets
+Rating bucket:
+- IG: AAA, AA+, AA, AA-, A+, A, A-, BBB+, BBB, BBB-
+- HY: BB+, BB, BB-, B+, B, B-, CCC+, CCC, CCC-, CC, C, D, NR
+
+Maturity bucket (computed from maturity_date vs today):
+- "0-2Y": years_to_maturity <= 2
+- "2-5Y": 2 < years_to_maturity <= 5
+- "5-10Y": 5 < years_to_maturity <= 10
+- "10Y+": years_to_maturity > 10
+
+### Bucketing Functions (packages/data/src/transforms.py)
+```python
+def bucket_rating(composite_rating: str) -> str:
+    """Map composite_rating to 'IG' or 'HY'."""
+
+def bucket_maturity(maturity_date: date, as_of: date) -> str:
+    """Map maturity_date to '0-2Y', '2-5Y', '5-10Y', '10Y+'."""
+```
+
+All metrics support groupby on: composite_rating, rating_bucket, maturity_bucket, industry_sector
