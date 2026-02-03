@@ -1,0 +1,8 @@
+mkdir -p packages/{core,data,signals,metrics,backtest}/{src,tests}
+mkdir -p packages/data/src/adapters
+mkdir -p apps/api/src/{routes,schemas}
+mkdir -p config/{environments,strategies}
+mkdir -p docs/decisions
+mkdir -p skills/{add-signal,add-data-source,run-backtest,verify-change}
+mkdir -p spec/fixtures
+mkdir -p tools
