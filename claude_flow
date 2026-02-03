@@ -1,0 +1,82 @@
+# Credit Analytics Monorepo
+
+## Navigation
+
+```
+packages/
+├── core/       → Vendored analytics library (DO NOT MODIFY)
+├── data/       → Data loading, adapters, caching
+├── signals/    → Trading signals (wraps core)
+├── metrics/    → Performance & risk metrics
+└── backtest/   → Strategy execution engine
+
+apps/
+├── api/        → FastAPI service
+└── web/        → React frontend
+
+config/         → TOML configuration files
+spec/           → Single source of truth (formulas, fixtures)
+skills/         → Task workflows (read before implementing)
+```
+
+## Global Rules
+
+### 1. Read Before Writing
+- Entering a package? Read its `CLAUDE.md` first
+- Starting a task? Read the relevant `skills/*/SKILL.md` first
+- Modifying spec? Update code AND fixtures
+
+### 2. Comprehension Gates (Required for ALL PRs)
+
+| Test | Question |
+|------|----------|
+| 60-second explain | Can I describe data flow without opening the diff? |
+| Change simulation | Where would a follow-up change go? |
+| 2am debug | What are the top 3 failure modes? |
+
+**If any feel uncertain → do not merge.**
+
+### 3. Package Boundaries
+
+```
+data/ ←── signals/ ←── backtest/
+  ↑          ↑            ↑
+  └── core ──┴────────────┘
+       ↑
+   (read-only)
+```
+
+- `core/` is vendored — never modify directly
+- Dependencies flow left-to-right only
+- No circular imports
+
+### 4. Spec Parity
+All formulas live in `spec/SPEC.md`. Before merge:
+```bash
+python tools/verify_spec_parity.py
+```
+
+## Quick Commands
+
+```bash
+# Run all tests
+uv run pytest
+
+# Check spec parity
+uv run python tools/verify_spec_parity.py
+
+# Type check
+uv run mypy packages/
+
+# Start API
+uv run uvicorn apps.api.src.main:app --reload
+```
+
+## Skills Index
+
+| Task | Skill | Packages Touched |
+|------|-------|------------------|
+| Add new signal | `skills/add-signal/` | spec/, signals/, tests/ |
+| Add data source | `skills/add-data-source/` | data/adapters/, config/ |
+| Run backtest | `skills/run-backtest/` | config/, backtest/, metrics/ |
+| Verify any change | `skills/verify-change/` | (all) |
