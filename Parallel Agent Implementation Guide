@@ -1,0 +1,416 @@
+# Parallel Agent Implementation Guide
+
+## Overview
+
+The credit-analytics monorepo is designed for parallel implementation by multiple Claude Code agents. Each agent works on an isolated package with clear boundaries, merging via git.
+
+## Architecture for Parallelization
+
+```
+                    ┌─────────────────┐
+                    │   Human Owner   │
+                    │ (coordination)  │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+        ┌──────────┐  ┌──────────┐  ┌──────────┐
+        │ Agent 1  │  │ Agent 2  │  │ Agent 3  │
+        │ signals/ │  │  data/   │  │ metrics/ │
+        └────┬─────┘  └────┬─────┘  └────┬─────┘
+             │             │             │
+             ▼             ▼             ▼
+        ┌─────────────────────────────────────┐
+        │              Git Repo               │
+        │  (feature branches → main)          │
+        └─────────────────────────────────────┘
+```
+
+## Work Division Strategy
+
+### Phase 1: Foundation (Sequential - Single Agent)
+
+**Must complete first** — establishes contracts other agents depend on.
+
+| Task | Agent | Output |
+|------|-------|--------|
+| Create repo structure | Agent 0 | Directory tree, root files |
+| Write spec/SPEC.md | Agent 0 | All formulas, parameters |
+| Create fixtures | Agent 0 | Golden test cases |
+| Implement signals/ | Agent 0 | Reference implementation |
+
+**Commit**: `feat: foundation - spec, fixtures, signals`
+
+### Phase 2: Parallel Implementation (3+ Agents)
+
+Once foundation is committed, agents can work in parallel on branches.
+
+| Agent | Package | Branch | Dependencies |
+|-------|---------|--------|--------------|
+| Agent A | `packages/data/` | `feat/data-package` | None |
+| Agent B | `packages/metrics/` | `feat/metrics-package` | None |
+| Agent C | `packages/backtest/` | `feat/backtest-package` | signals (read-only) |
+| Agent D | `apps/api/` | `feat/api-service` | All packages (read-only) |
+
+### Phase 3: Integration (Sequential)
+
+Merge branches, resolve conflicts, integration tests.
+
+---
+
+## Agent Prompts
+
+### Agent A: Data Package
+
+```markdown
+# Task: Implement packages/data/
+
+## Context
+You are implementing the data access layer for a credit analytics system.
+The repo already exists with:
+- spec/SPEC.md (formulas you're loading data for)
+- packages/signals/ (consumer of your data)
+- Root pyproject.toml with workspace config
+
+## Your Scope
+```
+packages/data/
+├── CLAUDE.md           # Create this
+├── pyproject.toml      # Create this
+├── src/
+│   ├── __init__.py
+│   ├── adapters/
+│   │   ├── __init__.py
+│   │   ├── base.py     # Abstract DataAdapter
+│   │   └── parquet.py  # Parquet implementation
+│   ├── loaders.py      # DataLoader class
+│   └── transforms.py   # Data cleaning
+└── tests/
+    ├── conftest.py
+    ├── test_adapters.py
+    └── test_loaders.py
+```
+
+## Contracts (DO NOT CHANGE)
+Your output must provide:
+```python
+# packages/data/src/__init__.py exports:
+DataLoader          # Main interface
+DataQuery           # Query parameters
+DateRange           # Date range type
+TradeRecord         # Normalized trade
+BondPricing         # Pricing record
+DataSourceError     # Exception type
+```
+
+## Branch
+Work on branch: `feat/data-package`
+
+## Verification
+Before committing:
+- [ ] `uv run pytest packages/data/tests/ -v` passes
+- [ ] DataLoader can be imported from packages.data
+- [ ] CLAUDE.md documents failure modes
+
+## Commit Message
+```
+feat(data): implement data access layer
+
+- DataAdapter abstract base with Parquet implementation
+- DataLoader with config file support
+- TradeRecord/BondPricing normalized types
+- Tests for adapter and loader
+
+Closes #2
+```
+```
+
+### Agent B: Metrics Package
+
+```markdown
+# Task: Implement packages/metrics/
+
+## Context
+You are implementing performance and risk metrics.
+Pure functions, no external dependencies except numpy/pandas.
+
+## Your Scope
+```
+packages/metrics/
+├── CLAUDE.md
+├── pyproject.toml
+├── src/
+│   ├── __init__.py
+│   ├── returns.py      # Sharpe, Sortino, hit rate
+│   └── risk.py         # VaR, CVaR, drawdown
+└── tests/
+    ├── test_returns.py
+    └── test_risk.py
+```
+
+## Contracts
+```python
+# Must export:
+sharpe_ratio(returns: pd.Series) -> float
+sortino_ratio(returns: pd.Series) -> float
+max_drawdown(returns: pd.Series) -> float
+hit_rate(returns: pd.Series) -> float
+value_at_risk(returns: pd.Series, confidence: float) -> float
+compute_performance_metrics(returns: pd.Series) -> PerformanceMetrics
+```
+
+## Rules
+- All functions are PURE (no side effects)
+- Return NaN for invalid inputs, don't raise
+- Annualize using 252 trading days
+- Document sign conventions in docstrings
+
+## Branch
+`feat/metrics-package`
+```
+
+### Agent C: Backtest Package
+
+```markdown
+# Task: Implement packages/backtest/
+
+## Context
+You are implementing the strategy execution engine.
+Depends on signals/ (already implemented) and metrics/.
+
+## Your Scope
+```
+packages/backtest/
+├── CLAUDE.md
+├── pyproject.toml
+├── src/
+│   ├── __init__.py
+│   ├── config.py       # Pydantic config models
+│   ├── engine.py       # BacktestEngine class
+│   └── portfolio.py    # Position tracking
+└── tests/
+    └── test_engine.py
+```
+
+## CRITICAL: No Lookahead
+Signal at time t must use only data from ≤ t.
+Forward returns use `.shift(-h)` ONLY in PnL calculation.
+
+## Contracts
+```python
+# Must export:
+BacktestEngine      # Main class
+StrategyConfig      # Pydantic config
+BacktestResult      # Results container
+
+# Usage:
+config = StrategyConfig.from_toml("config/strategies/x.toml")
+engine = BacktestEngine(config)
+result = engine.run(trades, pricing)
+```
+
+## Branch
+`feat/backtest-package`
+```
+
+### Agent D: API Service
+
+```markdown
+# Task: Implement apps/api/
+
+## Context
+FastAPI service exposing analytics endpoints.
+Depends on all packages (read-only).
+
+## Your Scope
+```
+apps/api/
+├── pyproject.toml
+├── src/
+│   ├── __init__.py
+│   ├── main.py         # FastAPI app
+│   ├── routes/
+│   │   ├── signals.py
+│   │   ├── backtest.py
+│   │   └── health.py
+│   └── schemas/        # Pydantic request/response
+│       ├── signals.py
+│       └── backtest.py
+└── tests/
+    └── test_routes.py
+```
+
+## Endpoints Required
+```
+GET  /health                    # Health check
+POST /signals/zscore            # Compute z-score
+POST /signals/streak            # Compute streak
+POST /backtest/run              # Run backtest
+GET  /backtest/{id}/results     # Get results
+```
+
+## Branch
+`feat/api-service`
+```
+
+---
+
+## Coordination Protocol
+
+### 1. Contract Files
+
+Create a `contracts/` directory with interface definitions:
+
+```python
+# contracts/data_interface.py
+from abc import ABC, abstractmethod
+from typing import Iterator
+import pandas as pd
+
+class IDataLoader(ABC):
+    @abstractmethod
+    def load_trades(self, start, end, cusips) -> pd.DataFrame: ...
+    
+    @abstractmethod
+    def load_pricing(self, start, end, cusips) -> pd.DataFrame: ...
+```
+
+Agents implement these interfaces. Integration verifies compatibility.
+
+### 2. Feature Flags for Incomplete Dependencies
+
+```python
+# In backtest/src/engine.py during parallel development:
+try:
+    from packages.data import DataLoader
+    HAS_DATA = True
+except ImportError:
+    HAS_DATA = False
+    
+class BacktestEngine:
+    def __init__(self, config):
+        if not HAS_DATA:
+            raise RuntimeError("data package not yet available")
+```
+
+### 3. Branch Merge Order
+
+```
+main
+  │
+  ├── feat/data-package      (merge first - no deps)
+  │     │
+  ├── feat/metrics-package   (merge second - no deps)
+  │     │
+  ├── feat/backtest-package  (merge third - needs signals)
+  │     │
+  └── feat/api-service       (merge last - needs all)
+```
+
+### 4. Integration Testing
+
+After all branches merged:
+
+```bash
+# Full integration test
+uv sync
+uv run pytest --integration
+
+# End-to-end test
+uv run python -c "
+from packages.data import DataLoader
+from packages.signals import zscore_trigger
+from packages.metrics import sharpe_ratio
+from packages.backtest import BacktestEngine
+
+print('All packages import successfully')
+"
+```
+
+---
+
+## Communication Between Agents
+
+### Shared Artifacts (Read-Only for All)
+
+| Artifact | Location | Owner |
+|----------|----------|-------|
+| Spec | `spec/SPEC.md` | Human |
+| Fixtures | `spec/fixtures/` | Human |
+| Root config | `pyproject.toml` | Human |
+| Contracts | `contracts/` | Human |
+
+### Agent Outputs (Write)
+
+| Agent | Writes To | Others Can Read |
+|-------|-----------|-----------------|
+| A | `packages/data/` | After merge |
+| B | `packages/metrics/` | After merge |
+| C | `packages/backtest/` | After merge |
+| D | `apps/api/` | After merge |
+
+### Conflict Avoidance
+
+1. **No shared files**: Each agent owns their package exclusively
+2. **Interface stability**: Contracts defined upfront, don't change during sprint
+3. **Merge order**: Explicit dependency order prevents conflicts
+
+---
+
+## Practical Workflow
+
+### Option 1: Sequential Terminals (Same Machine)
+
+```bash
+# Terminal 1 - Agent A (data)
+cd credit-analytics
+git checkout -b feat/data-package
+# ... implement ...
+git commit -am "feat(data): implement data package"
+git push origin feat/data-package
+
+# Terminal 2 - Agent B (metrics) - can start immediately
+cd credit-analytics
+git checkout -b feat/metrics-package
+# ... implement ...
+```
+
+### Option 2: Separate Claude Code Sessions
+
+1. Share repo URL with each agent
+2. Each agent clones and creates their branch
+3. Human merges PRs in order
+
+### Option 3: Claude Code with Worktrees
+
+```bash
+# Create worktrees for parallel work
+git worktree add ../credit-data feat/data-package
+git worktree add ../credit-metrics feat/metrics-package
+git worktree add ../credit-backtest feat/backtest-package
+
+# Each agent works in their worktree
+# Human merges when ready
+```
+
+---
+
+## Checklist for Human Coordinator
+
+### Before Parallel Phase
+- [ ] Foundation committed to main
+- [ ] Contracts defined in contracts/
+- [ ] All agents have repo access
+- [ ] Branch naming convention communicated
+
+### During Parallel Phase
+- [ ] Monitor agent progress
+- [ ] Answer interface questions
+- [ ] Don't modify shared artifacts
+
+### After Parallel Phase
+- [ ] Merge in dependency order: data → metrics → backtest → api
+- [ ] Run integration tests
+- [ ] Resolve any interface mismatches
+- [ ] Tag release
